@@ -7,9 +7,21 @@ const app = express();
 const PORT = process.env.PROXY_PORT || 8080;
 
 // Middleware
-app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+}));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Обработка OPTIONS запросов
+app.options('*', (req, res) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+    res.sendStatus(200);
+});
 
 // Логирование запросов
 app.use((req, res, next) => {
@@ -26,6 +38,11 @@ app.get('/status', (req, res) => {
 app.post('/chat/completions', (req, res) => {
     const headers = req.headers;
     delete headers.host;
+    
+    console.log('=== Запрос chat/completions ===');
+    console.log('Заголовки:', Object.keys(headers));
+    console.log('Тело запроса:', JSON.stringify(req.body, null, 2));
+    
     makeOpenAIRequest('POST', '/v1/chat/completions', headers, req.body, res);
 });
 
@@ -39,6 +56,14 @@ app.get('/models/:model', (req, res) => {
     const headers = req.headers;
     delete headers.host;
     makeOpenAIRequest('GET', `/v1/models/${req.params.model}`, headers, null, res);
+});
+
+// Обработка POST запроса на корневой путь (перенаправляем на chat/completions)
+app.post('/', (req, res) => {
+    const headers = req.headers;
+    delete headers.host;
+    console.log('POST запрос на корневой путь, перенаправляем на /v1/chat/completions');
+    makeOpenAIRequest('POST', '/v1/chat/completions', headers, req.body, res);
 });
 
 // Проверка доступности OpenAI API
@@ -120,12 +145,29 @@ function makeOpenAIRequest(method, path, headers, body, res) {
         });
         
         response.on('end', () => {
-            // Передаем заголовки ответа
-            Object.keys(response.headers).forEach(key => {
-                res.setHeader(key, response.headers[key]);
-            });
-            
-            res.status(response.statusCode).send(data);
+            try {
+                // Устанавливаем правильные заголовки для JSON
+                res.setHeader('Content-Type', 'application/json');
+                res.setHeader('Access-Control-Allow-Origin', '*');
+                res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+                res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+                
+                // Если ответ от OpenAI успешный
+                if (response.statusCode >= 200 && response.statusCode < 300) {
+                    console.log('Успешный ответ от OpenAI, отправляем клиенту');
+                    res.status(response.statusCode).send(data);
+                } else {
+                    // Если ошибка от OpenAI, логируем и возвращаем
+                    console.error('Ошибка от OpenAI:', response.statusCode, data);
+                    res.status(response.statusCode).send(data);
+                }
+            } catch (error) {
+                console.error('Ошибка при обработке ответа:', error);
+                res.status(500).json({
+                    error: 'Internal Server Error',
+                    message: 'Ошибка обработки ответа от OpenAI'
+                });
+            }
         });
     });
 
@@ -154,7 +196,7 @@ function makeOpenAIRequest(method, path, headers, body, res) {
     request.end();
 }
 
-// Обработка всех остальных запросов
+// Обработка всех остальных запросов (кроме уже обработанных выше)
 app.all('*', (req, res) => {
     const path = req.path;
     const method = req.method;
