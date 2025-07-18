@@ -2,6 +2,53 @@ const express = require('express');
 const cors = require('cors');
 const https = require('https');
 const http = require('http');
+const winston = require('winston');
+const fs = require('fs');
+const path = require('path');
+
+// Создаем папку для логов, если её нет
+const logsDir = path.join(__dirname, 'logs');
+if (!fs.existsSync(logsDir)) {
+    fs.mkdirSync(logsDir);
+}
+
+// Настройка логирования
+const logger = winston.createLogger({
+    level: 'info',
+    format: winston.format.combine(
+        winston.format.timestamp({
+            format: 'YYYY-MM-DD HH:mm:ss'
+        }),
+        winston.format.errors({ stack: true }),
+        winston.format.json()
+    ),
+    defaultMeta: { service: 'proxy-server' },
+    transports: [
+        // Логи ошибок в отдельный файл
+        new winston.transports.File({ 
+            filename: path.join(logsDir, 'error.log'), 
+            level: 'error',
+            maxsize: 5242880, // 5MB
+            maxFiles: 5
+        }),
+        // Все логи в общий файл
+        new winston.transports.File({ 
+            filename: path.join(logsDir, 'combined.log'),
+            maxsize: 5242880, // 5MB
+            maxFiles: 5
+        })
+    ]
+});
+
+// Добавляем логирование в консоль для разработки
+if (process.env.NODE_ENV !== 'production') {
+    logger.add(new winston.transports.Console({
+        format: winston.format.combine(
+            winston.format.colorize(),
+            winston.format.simple()
+        )
+    }));
+}
 
 const app = express();
 const PORT = process.env.PROXY_PORT || 8080;
@@ -25,7 +72,12 @@ app.options('*', (req, res) => {
 
 // Логирование запросов
 app.use((req, res, next) => {
-    console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+    logger.info(`${req.method} ${req.url}`, {
+        method: req.method,
+        url: req.url,
+        ip: req.ip,
+        userAgent: req.get('User-Agent')
+    });
     next();
 });
 
@@ -39,9 +91,12 @@ app.post('/chat/completions', (req, res) => {
     const headers = req.headers;
     delete headers.host;
     
-    console.log('=== Запрос chat/completions ===');
-    console.log('Заголовки:', Object.keys(headers));
-    console.log('Тело запроса:', JSON.stringify(req.body, null, 2));
+    logger.info('Запрос chat/completions', {
+        headers: Object.keys(headers),
+        body: req.body,
+        model: req.body?.model,
+        messageCount: req.body?.messages?.length
+    });
     
     makeOpenAIRequest('POST', '/v1/chat/completions', headers, req.body, res);
 });
@@ -90,7 +145,11 @@ app.get('/check-openai', async (req, res) => {
         });
 
         request.on('error', (err) => {
-            console.error('Ошибка проверки OpenAI:', err.message);
+            logger.error('Ошибка проверки OpenAI', {
+                error: err.message,
+                code: err.code,
+                stack: err.stack
+            });
             res.status(502).json({
                 status: 'error',
                 error: err.code,
@@ -101,6 +160,7 @@ app.get('/check-openai', async (req, res) => {
 
         request.on('timeout', () => {
             request.destroy();
+            logger.error('Таймаут при проверке OpenAI API');
             res.status(504).json({
                 status: 'error',
                 error: 'ETIMEDOUT',
@@ -109,14 +169,17 @@ app.get('/check-openai', async (req, res) => {
         });
 
         request.end();
-    } catch (error) {
-        console.error('Ошибка при проверке OpenAI:', error);
-        res.status(500).json({
-            status: 'error',
-            message: 'Внутренняя ошибка сервера',
-            details: error.message
-        });
-    }
+            } catch (error) {
+            logger.error('Ошибка при проверке OpenAI', {
+                error: error.message,
+                stack: error.stack
+            });
+            res.status(500).json({
+                status: 'error',
+                message: 'Внутренняя ошибка сервера',
+                details: error.message
+            });
+        }
 });
 
 // Функция для выполнения запросов к OpenAI
@@ -135,15 +198,22 @@ function makeOpenAIRequest(method, path, headers, body, res) {
         }
     };
 
-    console.log(`Отправляем ${method} запрос к OpenAI: ${path}`);
+    logger.info(`Отправляем ${method} запрос к OpenAI`, {
+        method: method,
+        path: path,
+        target: 'api.openai.com'
+    });
 
     const request = https.request(options, (response) => {
-        console.log(`Ответ от OpenAI: ${response.statusCode}`);
-        console.log('Заголовки ответа от OpenAI:', response.headers);
+        logger.info(`Ответ от OpenAI: ${response.statusCode}`, {
+            statusCode: response.statusCode,
+            contentEncoding: response.headers['content-encoding'],
+            contentLength: response.headers['content-length'],
+            contentType: response.headers['content-type']
+        });
         
         // Проверяем тип сжатия
         const contentEncoding = response.headers['content-encoding'];
-        console.log('Тип сжатия:', contentEncoding);
         
         if (contentEncoding === 'br') {
             // Brotli сжатие
@@ -165,18 +235,23 @@ function makeOpenAIRequest(method, path, headers, body, res) {
                     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
                     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
                     
-                    console.log('Распакованный Brotli ответ (первые 200 символов):', data.substring(0, 200));
-                    console.log('Длина распакованного ответа:', data.length);
+                    logger.info('Распакованный Brotli ответ', {
+                        responseLength: data.length,
+                        responsePreview: data.substring(0, 200)
+                    });
                     
                     if (response.statusCode >= 200 && response.statusCode < 300) {
                         // Проверяем, что это валидный JSON
                         try {
                             JSON.parse(data);
-                            console.log('Ответ является валидным JSON');
+                            logger.info('Ответ является валидным JSON');
                             res.status(response.statusCode).send(data);
                         } catch (jsonError) {
-                            console.error('Ответ не является валидным JSON:', jsonError.message);
-                            console.error('Первые 500 символов ответа:', data.substring(0, 500));
+                            logger.error('Ответ не является валидным JSON', {
+                                error: jsonError.message,
+                                responsePreview: data.substring(0, 500),
+                                responseLength: data.length
+                            });
                             res.status(500).json({
                                 error: 'Invalid JSON Response',
                                 message: 'OpenAI вернул невалидный JSON',
@@ -184,11 +259,17 @@ function makeOpenAIRequest(method, path, headers, body, res) {
                             });
                         }
                     } else {
-                        console.error('Ошибка от OpenAI:', response.statusCode, data);
+                        logger.error('Ошибка от OpenAI', {
+                            statusCode: response.statusCode,
+                            response: data
+                        });
                         res.status(response.statusCode).send(data);
                     }
                 } catch (error) {
-                    console.error('Ошибка при обработке распакованного ответа:', error);
+                    logger.error('Ошибка при обработке распакованного ответа', {
+                        error: error.message,
+                        stack: error.stack
+                    });
                     res.status(500).json({
                         error: 'Internal Server Error',
                         message: 'Ошибка обработки ответа от OpenAI'
@@ -197,7 +278,10 @@ function makeOpenAIRequest(method, path, headers, body, res) {
             });
             
             brotli.on('error', (error) => {
-                console.error('Ошибка распаковки Brotli:', error);
+                logger.error('Ошибка распаковки Brotli', {
+                    error: error.message,
+                    stack: error.stack
+                });
                 res.status(500).json({
                     error: 'Internal Server Error',
                     message: 'Ошибка распаковки Brotli ответа от OpenAI'
@@ -218,18 +302,23 @@ function makeOpenAIRequest(method, path, headers, body, res) {
                     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
                     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
                     
-                    console.log('Обычный ответ (первые 200 символов):', data.substring(0, 200));
-                    console.log('Длина ответа:', data.length);
+                    logger.info('Обычный ответ', {
+                        responseLength: data.length,
+                        responsePreview: data.substring(0, 200)
+                    });
                     
                     if (response.statusCode >= 200 && response.statusCode < 300) {
                         // Проверяем, что это валидный JSON
                         try {
                             JSON.parse(data);
-                            console.log('Ответ является валидным JSON');
+                            logger.info('Ответ является валидным JSON');
                             res.status(response.statusCode).send(data);
                         } catch (jsonError) {
-                            console.error('Ответ не является валидным JSON:', jsonError.message);
-                            console.error('Первые 500 символов ответа:', data.substring(0, 500));
+                            logger.error('Ответ не является валидным JSON', {
+                                error: jsonError.message,
+                                responsePreview: data.substring(0, 500),
+                                responseLength: data.length
+                            });
                             res.status(500).json({
                                 error: 'Invalid JSON Response',
                                 message: 'OpenAI вернул невалидный JSON',
@@ -237,11 +326,17 @@ function makeOpenAIRequest(method, path, headers, body, res) {
                             });
                         }
                     } else {
-                        console.error('Ошибка от OpenAI:', response.statusCode, data);
+                        logger.error('Ошибка от OpenAI', {
+                            statusCode: response.statusCode,
+                            response: data
+                        });
                         res.status(response.statusCode).send(data);
                     }
                 } catch (error) {
-                    console.error('Ошибка при обработке ответа:', error);
+                    logger.error('Ошибка при обработке ответа', {
+                        error: error.message,
+                        stack: error.stack
+                    });
                     res.status(500).json({
                         error: 'Internal Server Error',
                         message: 'Ошибка обработки ответа от OpenAI'
@@ -252,7 +347,11 @@ function makeOpenAIRequest(method, path, headers, body, res) {
     });
 
     request.on('error', (err) => {
-        console.error('Ошибка запроса к OpenAI:', err.message);
+        logger.error('Ошибка запроса к OpenAI', {
+            error: err.message,
+            code: err.code,
+            stack: err.stack
+        });
         res.status(502).json({
             error: 'Bad Gateway',
             message: 'Не удается подключиться к OpenAI API',
@@ -262,6 +361,7 @@ function makeOpenAIRequest(method, path, headers, body, res) {
 
     request.on('timeout', () => {
         request.destroy();
+        logger.error('Таймаут запроса к OpenAI');
         res.status(504).json({
             error: 'Gateway Timeout',
             message: 'Превышено время ожидания ответа от OpenAI'
@@ -296,7 +396,10 @@ app.all('*', (req, res) => {
         openaiPath = `/v1${path}`;
     }
     
-    console.log(`Оригинальный путь: ${path} -> OpenAI путь: ${openaiPath}`);
+    logger.info(`Перенаправление запроса`, {
+        originalPath: path,
+        openaiPath: openaiPath
+    });
     
     // Перенаправляем запрос к OpenAI
     makeOpenAIRequest(method, openaiPath, headers, body, res);
@@ -304,15 +407,26 @@ app.all('*', (req, res) => {
 
 // Обработка ошибок
 app.use((err, req, res, next) => {
-    console.error('Ошибка сервера:', err);
+    logger.error('Ошибка сервера', {
+        error: err.message,
+        stack: err.stack,
+        url: req.url,
+        method: req.method
+    });
     res.status(500).send('Внутренняя ошибка сервера');
 });
 
 // Запуск сервера
 app.listen(PORT, () => {
+    logger.info('Прокси сервер запущен', {
+        port: PORT,
+        target: 'https://api.openai.com/v1',
+        statusUrl: `http://localhost:${PORT}/status`
+    });
     console.log(`🚀 Прокси сервер запущен на порту ${PORT}`);
     console.log(`📡 Проксирует запросы на: https://api.openai.com/v1`);
     console.log(`🔗 Статус: http://localhost:${PORT}/status`);
+    console.log(`📝 Логи сохраняются в папку: ${logsDir}`);
 });
 
 module.exports = app; 
