@@ -141,49 +141,114 @@ function makeOpenAIRequest(method, path, headers, body, res) {
         console.log(`Ответ от OpenAI: ${response.statusCode}`);
         console.log('Заголовки ответа от OpenAI:', response.headers);
         
-        let data = '';
-        response.on('data', (chunk) => {
-            data += chunk;
-        });
+        // Проверяем тип сжатия
+        const contentEncoding = response.headers['content-encoding'];
+        console.log('Тип сжатия:', contentEncoding);
         
-        response.on('end', () => {
-            try {
-                // Устанавливаем правильные заголовки
-                res.setHeader('Content-Type', 'application/json');
-                res.setHeader('Access-Control-Allow-Origin', '*');
-                res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-                res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-                
-                console.log('Ответ от OpenAI (первые 200 символов):', data.substring(0, 200));
-                console.log('Длина ответа:', data.length);
-                
-                if (response.statusCode >= 200 && response.statusCode < 300) {
-                    // Проверяем, что это валидный JSON
-                    try {
-                        JSON.parse(data);
-                        console.log('Ответ является валидным JSON');
+        if (contentEncoding === 'br') {
+            // Brotli сжатие
+            const zlib = require('zlib');
+            const brotli = zlib.createBrotliDecompress();
+            
+            let data = '';
+            response.pipe(brotli);
+            
+            brotli.on('data', (chunk) => {
+                data += chunk;
+            });
+            
+            brotli.on('end', () => {
+                try {
+                    // Устанавливаем правильные заголовки
+                    res.setHeader('Content-Type', 'application/json');
+                    res.setHeader('Access-Control-Allow-Origin', '*');
+                    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+                    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+                    
+                    console.log('Распакованный Brotli ответ (первые 200 символов):', data.substring(0, 200));
+                    console.log('Длина распакованного ответа:', data.length);
+                    
+                    if (response.statusCode >= 200 && response.statusCode < 300) {
+                        // Проверяем, что это валидный JSON
+                        try {
+                            JSON.parse(data);
+                            console.log('Ответ является валидным JSON');
+                            res.status(response.statusCode).send(data);
+                        } catch (jsonError) {
+                            console.error('Ответ не является валидным JSON:', jsonError.message);
+                            console.error('Первые 500 символов ответа:', data.substring(0, 500));
+                            res.status(500).json({
+                                error: 'Invalid JSON Response',
+                                message: 'OpenAI вернул невалидный JSON',
+                                details: jsonError.message
+                            });
+                        }
+                    } else {
+                        console.error('Ошибка от OpenAI:', response.statusCode, data);
                         res.status(response.statusCode).send(data);
-                    } catch (jsonError) {
-                        console.error('Ответ не является валидным JSON:', jsonError.message);
-                        console.error('Первые 500 символов ответа:', data.substring(0, 500));
-                        res.status(500).json({
-                            error: 'Invalid JSON Response',
-                            message: 'OpenAI вернул невалидный JSON',
-                            details: jsonError.message
-                        });
                     }
-                } else {
-                    console.error('Ошибка от OpenAI:', response.statusCode, data);
-                    res.status(response.statusCode).send(data);
+                } catch (error) {
+                    console.error('Ошибка при обработке распакованного ответа:', error);
+                    res.status(500).json({
+                        error: 'Internal Server Error',
+                        message: 'Ошибка обработки ответа от OpenAI'
+                    });
                 }
-            } catch (error) {
-                console.error('Ошибка при обработке ответа:', error);
+            });
+            
+            brotli.on('error', (error) => {
+                console.error('Ошибка распаковки Brotli:', error);
                 res.status(500).json({
                     error: 'Internal Server Error',
-                    message: 'Ошибка обработки ответа от OpenAI'
+                    message: 'Ошибка распаковки Brotli ответа от OpenAI'
                 });
-            }
-        });
+            });
+        } else {
+            // Обычная обработка без сжатия
+            let data = '';
+            response.on('data', (chunk) => {
+                data += chunk;
+            });
+            
+            response.on('end', () => {
+                try {
+                    // Устанавливаем правильные заголовки
+                    res.setHeader('Content-Type', 'application/json');
+                    res.setHeader('Access-Control-Allow-Origin', '*');
+                    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+                    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+                    
+                    console.log('Обычный ответ (первые 200 символов):', data.substring(0, 200));
+                    console.log('Длина ответа:', data.length);
+                    
+                    if (response.statusCode >= 200 && response.statusCode < 300) {
+                        // Проверяем, что это валидный JSON
+                        try {
+                            JSON.parse(data);
+                            console.log('Ответ является валидным JSON');
+                            res.status(response.statusCode).send(data);
+                        } catch (jsonError) {
+                            console.error('Ответ не является валидным JSON:', jsonError.message);
+                            console.error('Первые 500 символов ответа:', data.substring(0, 500));
+                            res.status(500).json({
+                                error: 'Invalid JSON Response',
+                                message: 'OpenAI вернул невалидный JSON',
+                                details: jsonError.message
+                            });
+                        }
+                    } else {
+                        console.error('Ошибка от OpenAI:', response.statusCode, data);
+                        res.status(response.statusCode).send(data);
+                    }
+                } catch (error) {
+                    console.error('Ошибка при обработке ответа:', error);
+                    res.status(500).json({
+                        error: 'Internal Server Error',
+                        message: 'Ошибка обработки ответа от OpenAI'
+                    });
+                }
+            });
+        }
     });
 
     request.on('error', (err) => {
