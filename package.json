@@ -1,21 +1,21 @@
 {
-    "name": "simple-proxy-server",
-    "version": "1.0.0",
-    "description": "Простой прокси сервер для AI запросов",
-    "main": "simple-proxy-server.js",
-    "scripts": {
-      "start": "node simple-proxy-server.js",
-      "dev": "nodemon simple-proxy-server.js"
-    },
-    "dependencies": {
-      "express": "^4.18.2",
-      "http-proxy-middleware": "^2.0.6",
-      "cors": "^2.8.5"
-    },
-    "devDependencies": {
-      "nodemon": "^3.0.1"
-    },
-    "keywords": ["proxy", "openai", "api"],
-    "author": "FZP Team",
-    "license": "MIT"
-  }
+  "name": "simple-proxy-server",
+  "version": "1.0.0",
+  "description": "Простой прокси сервер для AI запросов",
+  "main": "simple-proxy-server.js",
+  "scripts": {
+    "start": "node simple-proxy-server.js",
+    "dev": "nodemon simple-proxy-server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "http-proxy-middleware": "^2.0.6",
+    "cors": "^2.8.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "keywords": ["proxy", "openai", "api"],
+  "author": "kitay",
+  "license": "MIT"
+}

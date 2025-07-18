@@ -53,4 +53,4 @@ app.listen(PORT, () => {
     console.log(`🔗 Статус: http://localhost:${PORT}/status`);
 });
 
-module.exports = app;
+module.exports = app; 
