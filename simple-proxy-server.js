@@ -22,6 +22,25 @@ app.get('/status', (req, res) => {
     res.status(200).send('OK\n');
 });
 
+// Специальные эндпоинты для OpenAI API
+app.post('/chat/completions', (req, res) => {
+    const headers = req.headers;
+    delete headers.host;
+    makeOpenAIRequest('POST', '/v1/chat/completions', headers, req.body, res);
+});
+
+app.get('/models', (req, res) => {
+    const headers = req.headers;
+    delete headers.host;
+    makeOpenAIRequest('GET', '/v1/models', headers, null, res);
+});
+
+app.get('/models/:model', (req, res) => {
+    const headers = req.headers;
+    delete headers.host;
+    makeOpenAIRequest('GET', `/v1/models/${req.params.model}`, headers, null, res);
+});
+
 // Проверка доступности OpenAI API
 app.get('/check-openai', async (req, res) => {
     try {
@@ -147,8 +166,18 @@ app.all('*', (req, res) => {
     // Получаем тело запроса
     const body = req.body;
     
+    // Если запрос идет на корневой путь, перенаправляем на /v1
+    let openaiPath = path;
+    if (path === '/' || path === '') {
+        openaiPath = '/v1/';
+    } else if (!path.startsWith('/v1/')) {
+        openaiPath = `/v1${path}`;
+    }
+    
+    console.log(`Оригинальный путь: ${path} -> OpenAI путь: ${openaiPath}`);
+    
     // Перенаправляем запрос к OpenAI
-    makeOpenAIRequest(method, path, headers, body, res);
+    makeOpenAIRequest(method, openaiPath, headers, body, res);
 });
 
 // Обработка ошибок
