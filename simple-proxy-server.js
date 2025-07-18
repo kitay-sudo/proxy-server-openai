@@ -1,6 +1,7 @@
 const express = require('express');
-const { createProxyMiddleware } = require('http-proxy-middleware');
 const cors = require('cors');
+const https = require('https');
+const http = require('http');
 
 const app = express();
 const PORT = process.env.PROXY_PORT || 8080;
@@ -24,8 +25,6 @@ app.get('/status', (req, res) => {
 // Проверка доступности OpenAI API
 app.get('/check-openai', async (req, res) => {
     try {
-        const https = require('https');
-        
         const options = {
             hostname: 'api.openai.com',
             port: 443,
@@ -76,59 +75,81 @@ app.get('/check-openai', async (req, res) => {
     }
 });
 
-// Прокси для OpenAI API
-app.use('/', createProxyMiddleware({
-    target: 'https://api.openai.com/v1',
-    changeOrigin: true,
-    pathRewrite: {
-        '^/': '/'
-    },
-    timeout: 30000, // 30 секунд таймаут
-    proxyTimeout: 30000,
-    onProxyReq: (proxyReq, req, res) => {
-        console.log(`Проксируем на: ${proxyReq.path}`);
-        // Добавляем заголовки для лучшей совместимости
-        proxyReq.setHeader('User-Agent', 'Mozilla/5.0 (compatible; ProxyServer/1.0)');
-    },
-    onProxyRes: (proxyRes, req, res) => {
-        console.log(`Ответ: ${proxyRes.statusCode}`);
-    },
-    onError: (err, req, res) => {
-        console.error('Ошибка прокси:', err.message);
-        console.error('Код ошибки:', err.code);
-        
-        // Более детальная обработка ошибок
-        if (err.code === 'ECONNRESET') {
-            console.error('Соединение сброшено. Возможные причины:');
-            console.error('- Блокировка доступа к OpenAI API');
-            console.error('- Проблемы с сетью');
-            console.error('- Неправильная конфигурация прокси');
-            res.status(502).json({
-                error: 'Bad Gateway',
-                message: 'Не удается подключиться к OpenAI API',
-                details: 'Проверьте доступность api.openai.com'
-            });
-        } else if (err.code === 'ENOTFOUND') {
-            res.status(502).json({
-                error: 'Bad Gateway',
-                message: 'Не удается найти сервер OpenAI',
-                details: 'Проверьте DNS настройки'
-            });
-        } else if (err.code === 'ETIMEDOUT') {
-            res.status(504).json({
-                error: 'Gateway Timeout',
-                message: 'Превышено время ожидания ответа от OpenAI',
-                details: 'Попробуйте позже'
-            });
-        } else {
-            res.status(500).json({
-                error: 'Internal Server Error',
-                message: 'Ошибка прокси сервера',
-                details: err.message
-            });
+// Функция для выполнения запросов к OpenAI
+function makeOpenAIRequest(method, path, headers, body, res) {
+    const options = {
+        hostname: 'api.openai.com',
+        port: 443,
+        path: path,
+        method: method,
+        timeout: 30000,
+        headers: {
+            'Content-Type': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (compatible; ProxyServer/1.0)',
+            ...headers
         }
+    };
+
+    console.log(`Отправляем ${method} запрос к OpenAI: ${path}`);
+
+    const request = https.request(options, (response) => {
+        console.log(`Ответ от OpenAI: ${response.statusCode}`);
+        
+        let data = '';
+        response.on('data', (chunk) => {
+            data += chunk;
+        });
+        
+        response.on('end', () => {
+            // Передаем заголовки ответа
+            Object.keys(response.headers).forEach(key => {
+                res.setHeader(key, response.headers[key]);
+            });
+            
+            res.status(response.statusCode).send(data);
+        });
+    });
+
+    request.on('error', (err) => {
+        console.error('Ошибка запроса к OpenAI:', err.message);
+        res.status(502).json({
+            error: 'Bad Gateway',
+            message: 'Не удается подключиться к OpenAI API',
+            details: err.message
+        });
+    });
+
+    request.on('timeout', () => {
+        request.destroy();
+        res.status(504).json({
+            error: 'Gateway Timeout',
+            message: 'Превышено время ожидания ответа от OpenAI'
+        });
+    });
+
+    // Отправляем тело запроса, если есть
+    if (body && Object.keys(body).length > 0) {
+        request.write(JSON.stringify(body));
     }
-}));
+    
+    request.end();
+}
+
+// Обработка всех остальных запросов
+app.all('*', (req, res) => {
+    const path = req.path;
+    const method = req.method;
+    const headers = req.headers;
+    
+    // Удаляем заголовки хоста, чтобы избежать конфликтов
+    delete headers.host;
+    
+    // Получаем тело запроса
+    const body = req.body;
+    
+    // Перенаправляем запрос к OpenAI
+    makeOpenAIRequest(method, path, headers, body, res);
+});
 
 // Обработка ошибок
 app.use((err, req, res, next) => {
