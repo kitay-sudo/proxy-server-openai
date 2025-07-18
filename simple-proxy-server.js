@@ -70,16 +70,17 @@ app.options('*', (req, res) => {
     res.sendStatus(200);
 });
 
-// Логирование запросов
-app.use((req, res, next) => {
-    logger.info(`${req.method} ${req.url}`, {
-        method: req.method,
-        url: req.url,
-        ip: req.ip,
-        userAgent: req.get('User-Agent')
+// Логирование запросов (только для отладки)
+if (process.env.NODE_ENV === 'development') {
+    app.use((req, res, next) => {
+        logger.info(`${req.method} ${req.url}`, {
+            method: req.method,
+            url: req.url,
+            ip: req.ip
+        });
+        next();
     });
-    next();
-});
+}
 
 // Статус эндпоинт
 app.get('/status', (req, res) => {
@@ -91,9 +92,8 @@ app.post('/chat/completions', (req, res) => {
     const headers = req.headers;
     delete headers.host;
     
-    logger.info('Запрос chat/completions', {
-        headers: Object.keys(headers),
-        body: req.body,
+    // Логируем только основную информацию
+    logger.info('Chat запрос', {
         model: req.body?.model,
         messageCount: req.body?.messages?.length
     });
@@ -198,19 +198,14 @@ function makeOpenAIRequest(method, path, headers, body, res) {
         }
     };
 
-    logger.info(`Отправляем ${method} запрос к OpenAI`, {
-        method: method,
-        path: path,
-        target: 'api.openai.com'
-    });
+    // Логируем только для отладки
+    if (process.env.NODE_ENV === 'development') {
+        logger.info(`OpenAI запрос: ${method} ${path}`);
+    }
 
     const request = https.request(options, (response) => {
-        logger.info(`Ответ от OpenAI: ${response.statusCode}`, {
-            statusCode: response.statusCode,
-            contentEncoding: response.headers['content-encoding'],
-            contentLength: response.headers['content-length'],
-            contentType: response.headers['content-type']
-        });
+        // Логируем только статус ответа
+        logger.info(`OpenAI ответ: ${response.statusCode}`);
         
         // Проверяем тип сжатия
         const contentEncoding = response.headers['content-encoding'];
@@ -235,21 +230,19 @@ function makeOpenAIRequest(method, path, headers, body, res) {
                     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
                     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
                     
-                    logger.info('Распакованный Brotli ответ', {
-                        responseLength: data.length,
-                        responsePreview: data.substring(0, 200)
-                    });
+                    // Логируем только для отладки
+                    if (process.env.NODE_ENV === 'development') {
+                        logger.info(`Brotli ответ: ${data.length} символов`);
+                    }
                     
                     if (response.statusCode >= 200 && response.statusCode < 300) {
                         // Проверяем, что это валидный JSON
                         try {
                             JSON.parse(data);
-                            logger.info('Ответ является валидным JSON');
                             res.status(response.statusCode).send(data);
                         } catch (jsonError) {
-                            logger.error('Ответ не является валидным JSON', {
+                            logger.error('Невалидный JSON от OpenAI', {
                                 error: jsonError.message,
-                                responsePreview: data.substring(0, 500),
                                 responseLength: data.length
                             });
                             res.status(500).json({
@@ -260,8 +253,7 @@ function makeOpenAIRequest(method, path, headers, body, res) {
                         }
                     } else {
                         logger.error('Ошибка от OpenAI', {
-                            statusCode: response.statusCode,
-                            response: data
+                            statusCode: response.statusCode
                         });
                         res.status(response.statusCode).send(data);
                     }
@@ -302,21 +294,18 @@ function makeOpenAIRequest(method, path, headers, body, res) {
                     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
                     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
                     
-                    logger.info('Обычный ответ', {
-                        responseLength: data.length,
-                        responsePreview: data.substring(0, 200)
-                    });
+                    if (process.env.NODE_ENV === 'development') {
+                        logger.info(`Обычный ответ: ${data.length} символов`);
+                    }
                     
                     if (response.statusCode >= 200 && response.statusCode < 300) {
                         // Проверяем, что это валидный JSON
                         try {
                             JSON.parse(data);
-                            logger.info('Ответ является валидным JSON');
                             res.status(response.statusCode).send(data);
                         } catch (jsonError) {
-                            logger.error('Ответ не является валидным JSON', {
+                            logger.error('Невалидный JSON от OpenAI', {
                                 error: jsonError.message,
-                                responsePreview: data.substring(0, 500),
                                 responseLength: data.length
                             });
                             res.status(500).json({
@@ -327,8 +316,7 @@ function makeOpenAIRequest(method, path, headers, body, res) {
                         }
                     } else {
                         logger.error('Ошибка от OpenAI', {
-                            statusCode: response.statusCode,
-                            response: data
+                            statusCode: response.statusCode
                         });
                         res.status(response.statusCode).send(data);
                     }
