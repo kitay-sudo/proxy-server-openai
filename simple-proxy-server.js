@@ -130,6 +130,7 @@ function makeOpenAIRequest(method, path, headers, body, res) {
         headers: {
             'Content-Type': 'application/json',
             'User-Agent': 'Mozilla/5.0 (compatible; ProxyServer/1.0)',
+            'Accept-Encoding': 'gzip, deflate',
             ...headers
         }
     };
@@ -138,37 +139,87 @@ function makeOpenAIRequest(method, path, headers, body, res) {
 
     const request = https.request(options, (response) => {
         console.log(`Ответ от OpenAI: ${response.statusCode}`);
+        console.log('Заголовки ответа от OpenAI:', response.headers);
         
-        let data = '';
-        response.on('data', (chunk) => {
-            data += chunk;
-        });
+        // Проверяем, сжат ли ответ
+        const isCompressed = response.headers['content-encoding'] === 'gzip';
         
-        response.on('end', () => {
-            try {
-                // Устанавливаем правильные заголовки для JSON
-                res.setHeader('Content-Type', 'application/json');
-                res.setHeader('Access-Control-Allow-Origin', '*');
-                res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-                res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-                
-                // Если ответ от OpenAI успешный
-                if (response.statusCode >= 200 && response.statusCode < 300) {
-                    console.log('Успешный ответ от OpenAI, отправляем клиенту');
-                    res.status(response.statusCode).send(data);
-                } else {
-                    // Если ошибка от OpenAI, логируем и возвращаем
-                    console.error('Ошибка от OpenAI:', response.statusCode, data);
-                    res.status(response.statusCode).send(data);
+        if (isCompressed) {
+            // Если ответ сжат, распаковываем его
+            const zlib = require('zlib');
+            const gunzip = zlib.createGunzip();
+            
+            let data = '';
+            response.pipe(gunzip);
+            
+            gunzip.on('data', (chunk) => {
+                data += chunk;
+            });
+            
+            gunzip.on('end', () => {
+                try {
+                    // Устанавливаем правильные заголовки
+                    res.setHeader('Content-Type', 'application/json');
+                    res.setHeader('Access-Control-Allow-Origin', '*');
+                    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+                    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+                    
+                    console.log('Распакованный ответ от OpenAI:', data.substring(0, 200) + '...');
+                    
+                    if (response.statusCode >= 200 && response.statusCode < 300) {
+                        res.status(response.statusCode).send(data);
+                    } else {
+                        console.error('Ошибка от OpenAI:', response.statusCode, data);
+                        res.status(response.statusCode).send(data);
+                    }
+                } catch (error) {
+                    console.error('Ошибка при обработке распакованного ответа:', error);
+                    res.status(500).json({
+                        error: 'Internal Server Error',
+                        message: 'Ошибка обработки ответа от OpenAI'
+                    });
                 }
-            } catch (error) {
-                console.error('Ошибка при обработке ответа:', error);
+            });
+            
+            gunzip.on('error', (error) => {
+                console.error('Ошибка распаковки:', error);
                 res.status(500).json({
                     error: 'Internal Server Error',
-                    message: 'Ошибка обработки ответа от OpenAI'
+                    message: 'Ошибка распаковки ответа от OpenAI'
                 });
-            }
-        });
+            });
+        } else {
+            // Если ответ не сжат, обрабатываем как обычно
+            let data = '';
+            response.on('data', (chunk) => {
+                data += chunk;
+            });
+            
+            response.on('end', () => {
+                try {
+                    // Устанавливаем правильные заголовки
+                    res.setHeader('Content-Type', 'application/json');
+                    res.setHeader('Access-Control-Allow-Origin', '*');
+                    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+                    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+                    
+                    console.log('Несжатый ответ от OpenAI:', data.substring(0, 200) + '...');
+                    
+                    if (response.statusCode >= 200 && response.statusCode < 300) {
+                        res.status(response.statusCode).send(data);
+                    } else {
+                        console.error('Ошибка от OpenAI:', response.statusCode, data);
+                        res.status(response.statusCode).send(data);
+                    }
+                } catch (error) {
+                    console.error('Ошибка при обработке ответа:', error);
+                    res.status(500).json({
+                        error: 'Internal Server Error',
+                        message: 'Ошибка обработки ответа от OpenAI'
+                    });
+                }
+            });
+        }
     });
 
     request.on('error', (err) => {
